@@ -12,6 +12,7 @@ from django.db.models import Avg
 from django.utils import timezone
 from .models import QualiteAir
 from .serializers import QualiteAirSerializer
+from .ml_service import predire_tous_les_indicateurs
 
 class QualiteAirViewSet(viewsets.ModelViewSet):
     queryset = QualiteAir.objects.all().order_by('-date_cible')
@@ -119,3 +120,18 @@ class QualiteAirViewSet(viewsets.ModelViewSet):
                 "error": "Le service IA est temporairement indisponible.",
                 "details": str(e)
             }, status=503)
+        
+    @action(detail=False, methods=['post'], url_path='predict')
+    def predict_all_risks(self, request):
+        ville_nom = request.data.get('ville_nom')
+        meteo_data = request.data.get('meteo_data', {})
+        
+        if not ville_nom:
+            return Response({"error": "Le champ 'ville_nom' est obligatoire."}, status=400)
+            
+        resultat = predire_tous_les_indicateurs(ville_nom, meteo_data)
+        
+        if "error" in resultat:
+            return Response(resultat, status=400)
+            
+        return Response(resultat, status=200)
