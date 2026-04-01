@@ -1,6 +1,8 @@
+import json
 import math
 from datetime import datetime
 import pandas as pd
+from django.http import StreamingHttpResponse
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
@@ -59,6 +61,103 @@ def pm25_to_aqi(pm25):
         return min(int(300 + (pm25 - 250.4) / 150 * 200), 500), "Dangereux"
 
 
+def _build_meteo(ville, date, row):
+    return ReleveMeteo(
+        ville=ville, date=date,
+        temperature_2m_max=safe_float(row.get("temperature_2m_max")),
+        temperature_2m_min=safe_float(row.get("temperature_2m_min")),
+        temperature_2m_mean=safe_float(row.get("temperature_2m_mean")),
+        apparent_temperature_max=safe_float(row.get("apparent_temperature_max")),
+        apparent_temperature_min=safe_float(row.get("apparent_temperature_min")),
+        apparent_temperature_mean=safe_float(row.get("apparent_temperature_mean")),
+        weather_code=int(row["weather_code"]) if safe_float(row.get("weather_code")) is not None else None,
+        precipitation_sum=safe_float(row.get("precipitation_sum")),
+        rain_sum=safe_float(row.get("rain_sum")),
+        snowfall_sum=safe_float(row.get("snowfall_sum")),
+        precipitation_hours=safe_float(row.get("precipitation_hours")),
+        wind_speed_10m_max=safe_float(row.get("wind_speed_10m_max")),
+        wind_gusts_10m_max=safe_float(row.get("wind_gusts_10m_max")),
+        wind_direction_10m_dominant=safe_float(row.get("wind_direction_10m_dominant")),
+        daylight_duration=safe_float(row.get("daylight_duration")),
+        sunshine_duration=safe_float(row.get("sunshine_duration")),
+        shortwave_radiation_sum=safe_float(row.get("shortwave_radiation_sum")),
+        et0_fao_evapotranspiration=safe_float(row.get("et0_fao_evapotranspiration")),
+    )
+
+
+def stream_import(df, ville_lookup):
+    """Generator that yields SSE events with import progress."""
+    total = len(df)
+    batch_size = 500
+    meteo_batch = []
+    aqi_batch = []
+    processed = 0
+    skipped = 0
+    meteo_total = 0
+    aqi_total = 0
+
+    # Convert numeric columns
+    numeric_cols = [
+        "temperature_2m_max", "temperature_2m_min", "temperature_2m_mean",
+        "apparent_temperature_max", "apparent_temperature_min", "apparent_temperature_mean",
+        "wind_speed_10m_max", "wind_gusts_10m_max", "shortwave_radiation_sum",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    for _, row in df.iterrows():
+        processed += 1
+
+        ville = ville_lookup.get(row.get("city"))
+        if not ville:
+            skipped += 1
+            if processed % batch_size == 0 or processed == total:
+                progress = round(processed / total * 100)
+                yield f"data: {json.dumps({'progress': progress, 'processed': processed, 'total': total, 'meteo': meteo_total, 'aqi': aqi_total, 'skipped': skipped})}\n\n"
+            continue
+
+        time_val = row.get("time")
+        if hasattr(time_val, "date"):
+            date = time_val.date()
+        else:
+            try:
+                date = datetime.strptime(str(time_val)[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                skipped += 1
+                continue
+
+        meteo_batch.append(_build_meteo(ville, date, row))
+
+        pm25 = compute_pm25_proxy(row)
+        aqi_val, categorie = pm25_to_aqi(pm25)
+        aqi_batch.append(QualiteAir(
+            ville=ville, date_cible=date,
+            valeur_pm25=round(pm25, 2), indice_aqi=aqi_val,
+            categorie=categorie, est_prediction=False,
+        ))
+
+        if len(meteo_batch) >= batch_size:
+            ReleveMeteo.objects.bulk_create(meteo_batch, ignore_conflicts=True)
+            QualiteAir.objects.bulk_create(aqi_batch, ignore_conflicts=True)
+            meteo_total += len(meteo_batch)
+            aqi_total += len(aqi_batch)
+            meteo_batch = []
+            aqi_batch = []
+
+            progress = round(processed / total * 100)
+            yield f"data: {json.dumps({'progress': progress, 'processed': processed, 'total': total, 'meteo': meteo_total, 'aqi': aqi_total, 'skipped': skipped})}\n\n"
+
+    # Final batch
+    if meteo_batch:
+        ReleveMeteo.objects.bulk_create(meteo_batch, ignore_conflicts=True)
+        QualiteAir.objects.bulk_create(aqi_batch, ignore_conflicts=True)
+        meteo_total += len(meteo_batch)
+        aqi_total += len(aqi_batch)
+
+    yield f"data: {json.dumps({'progress': 100, 'processed': total, 'total': total, 'meteo': meteo_total, 'aqi': aqi_total, 'skipped': skipped, 'done': True})}\n\n"
+
+
 @api_view(["POST"])
 @parser_classes([MultiPartParser])
 def import_dataset(request):
@@ -78,79 +177,14 @@ def import_dataset(request):
     except Exception as e:
         return Response({"error": f"Impossible de lire le fichier : {str(e)}"}, status=400)
 
-    # Convert numeric columns
-    numeric_cols = [
-        "temperature_2m_max", "temperature_2m_min", "temperature_2m_mean",
-        "apparent_temperature_max", "apparent_temperature_min", "apparent_temperature_mean",
-        "wind_speed_10m_max", "wind_gusts_10m_max", "shortwave_radiation_sum",
-    ]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
     ville_lookup = {v.nom: v for v in Ville.objects.all()}
     if not ville_lookup:
         return Response({"error": "Aucune ville en base. Lancez seed_locations d'abord."}, status=400)
 
-    meteo_batch = []
-    aqi_batch = []
-    skipped = 0
-
-    for _, row in df.iterrows():
-        ville = ville_lookup.get(row.get("city"))
-        if not ville:
-            skipped += 1
-            continue
-
-        time_val = row.get("time")
-        if hasattr(time_val, "date"):
-            date = time_val.date()
-        else:
-            try:
-                date = datetime.strptime(str(time_val)[:10], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                skipped += 1
-                continue
-
-        meteo_batch.append(ReleveMeteo(
-            ville=ville, date=date,
-            temperature_2m_max=safe_float(row.get("temperature_2m_max")),
-            temperature_2m_min=safe_float(row.get("temperature_2m_min")),
-            temperature_2m_mean=safe_float(row.get("temperature_2m_mean")),
-            apparent_temperature_max=safe_float(row.get("apparent_temperature_max")),
-            apparent_temperature_min=safe_float(row.get("apparent_temperature_min")),
-            apparent_temperature_mean=safe_float(row.get("apparent_temperature_mean")),
-            weather_code=int(row["weather_code"]) if safe_float(row.get("weather_code")) is not None else None,
-            precipitation_sum=safe_float(row.get("precipitation_sum")),
-            rain_sum=safe_float(row.get("rain_sum")),
-            snowfall_sum=safe_float(row.get("snowfall_sum")),
-            precipitation_hours=safe_float(row.get("precipitation_hours")),
-            wind_speed_10m_max=safe_float(row.get("wind_speed_10m_max")),
-            wind_gusts_10m_max=safe_float(row.get("wind_gusts_10m_max")),
-            wind_direction_10m_dominant=safe_float(row.get("wind_direction_10m_dominant")),
-            daylight_duration=safe_float(row.get("daylight_duration")),
-            sunshine_duration=safe_float(row.get("sunshine_duration")),
-            shortwave_radiation_sum=safe_float(row.get("shortwave_radiation_sum")),
-            et0_fao_evapotranspiration=safe_float(row.get("et0_fao_evapotranspiration")),
-        ))
-
-        pm25 = compute_pm25_proxy(row)
-        aqi_val, categorie = pm25_to_aqi(pm25)
-        aqi_batch.append(QualiteAir(
-            ville=ville, date_cible=date,
-            valeur_pm25=round(pm25, 2), indice_aqi=aqi_val,
-            categorie=categorie, est_prediction=False,
-        ))
-
-    meteo_count = len(meteo_batch)
-    aqi_count = len(aqi_batch)
-    ReleveMeteo.objects.bulk_create(meteo_batch, ignore_conflicts=True)
-    QualiteAir.objects.bulk_create(aqi_batch, ignore_conflicts=True)
-
-    return Response({
-        "success": True,
-        "meteo_importes": meteo_count,
-        "aqi_generes": aqi_count,
-        "lignes_ignorees": skipped,
-        "total_lignes": len(df),
-    })
+    response = StreamingHttpResponse(
+        stream_import(df, ville_lookup),
+        content_type='text/event-stream',
+    )
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
