@@ -22,7 +22,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'cle-secrete-par-defaut-pour-dev')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
 # Clé API pour le Chatbot
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
