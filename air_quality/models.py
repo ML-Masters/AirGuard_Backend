@@ -22,6 +22,12 @@ class QualiteAir(models.Model):
 
     class Meta:
         unique_together = ('ville', 'date_cible', 'est_prediction')
+        indexes = [
+            models.Index(fields=['ville', 'date_cible']),
+            models.Index(fields=['date_cible']),
+            models.Index(fields=['est_prediction']),
+            models.Index(fields=['categorie']),
+        ]
 
     def __str__(self):
         type_donnee = "Prédiction" if self.est_prediction else "Réel"

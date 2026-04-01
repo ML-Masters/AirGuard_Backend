@@ -165,29 +165,41 @@ def generer_alertes_automatiques():
     aujourd_hui = timezone.now().date()
     created = 0
 
-    for ville in Ville.objects.all():
-        # Dernière donnée AQI pour cette ville
-        dernier_aqi = QualiteAir.objects.filter(
-            ville=ville,
-            est_prediction=False,
-        ).order_by('-date_cible').first()
+    from django.db.models import Max, Subquery, OuterRef
 
-        if not dernier_aqi:
-            continue
+    # Get latest AQI date per city in ONE query
+    latest_dates = QualiteAir.objects.filter(
+        est_prediction=False,
+    ).values('ville').annotate(max_date=Max('date_cible'))
+
+    # Get the actual AQI records for those dates
+    latest_aqis = QualiteAir.objects.filter(
+        est_prediction=False,
+        date_cible__in=Subquery(
+            QualiteAir.objects.filter(
+                ville=OuterRef('ville'),
+                est_prediction=False,
+            ).order_by('-date_cible').values('date_cible')[:1]
+        ),
+    ).select_related('ville')
+
+    # Get cities that already have active alerts today
+    villes_with_alerts = set(
+        Alerte.objects.filter(
+            statut__in=['brouillon', 'publiee'],
+            est_active=True,
+            date_creation__date__gte=aujourd_hui,
+        ).values_list('ville_id', flat=True)
+    )
+
+    for dernier_aqi in latest_aqis:
+        ville = dernier_aqi.ville
 
         niveau = determiner_niveau(dernier_aqi.indice_aqi)
         if not niveau:
             continue
 
-        # Vérifier qu'il n'y a pas déjà une alerte active/brouillon récente pour cette ville
-        alerte_existante = Alerte.objects.filter(
-            ville=ville,
-            statut__in=['brouillon', 'publiee'],
-            est_active=True,
-            date_creation__date__gte=aujourd_hui,
-        ).exists()
-
-        if alerte_existante:
+        if ville.id in villes_with_alerts:
             continue
 
         reco = RECOMMANDATIONS[niveau]

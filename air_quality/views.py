@@ -14,7 +14,7 @@ from .serializers import QualiteAirSerializer
 from .ml_service import predire_tous_les_indicateurs
 
 class QualiteAirViewSet(viewsets.ModelViewSet):
-    queryset = QualiteAir.objects.all().order_by('-date_cible')
+    queryset = QualiteAir.objects.select_related('ville__region').all().order_by('-date_cible')
     serializer_class = QualiteAirSerializer
 
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
@@ -80,10 +80,17 @@ class QualiteAirViewSet(viewsets.ModelViewSet):
         if derniere_date:
             donnees_jour = QualiteAir.objects.filter(date_cible=derniere_date, est_prediction=False)
             total_villes = donnees_jour.count()
-            aqi_moyen = donnees_jour.aggregate(Avg('indice_aqi'))['indice_aqi__avg'] or 0
-            critiques = donnees_jour.filter(categorie__in=['Malsain', 'Tres_malsain', 'Dangereux']).count()
-            bons = donnees_jour.filter(categorie='Bon').count()
-            moderes = donnees_jour.filter(categorie='Modere').count()
+            from django.db.models import Count, Q
+            stats = donnees_jour.aggregate(
+                aqi_avg=Avg('indice_aqi'),
+                critiques=Count('id', filter=Q(categorie__in=['Malsain', 'Tres_malsain', 'Dangereux'])),
+                bons=Count('id', filter=Q(categorie='Bon')),
+                moderes=Count('id', filter=Q(categorie='Modere')),
+            )
+            aqi_moyen = stats['aqi_avg'] or 0
+            critiques = stats['critiques']
+            bons = stats['bons']
+            moderes = stats['moderes']
 
             kpi_data = [
                 ['Indicateur', 'Valeur'],
@@ -115,7 +122,7 @@ class QualiteAirViewSet(viewsets.ModelViewSet):
         if derniere_date:
             top10 = QualiteAir.objects.filter(
                 date_cible=derniere_date, est_prediction=False
-            ).select_related('ville').order_by('-indice_aqi')[:10]
+            ).select_related('ville__region').order_by('-indice_aqi')[:10]
 
             if top10:
                 city_data = [['Rang', 'Ville', 'Region', 'AQI', 'PM2.5 (ug/m3)', 'Categorie']]

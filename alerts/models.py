@@ -47,6 +47,12 @@ class Alerte(models.Model):
 
     class Meta:
         ordering = ['-date_creation']
+        indexes = [
+            models.Index(fields=['statut']),
+            models.Index(fields=['est_active']),
+            models.Index(fields=['ville', 'statut']),
+            models.Index(fields=['date_creation']),
+        ]
 
     def __str__(self):
         return f"Alerte {self.niveau_severite} [{self.statut}] - {self.ville.nom}"

@@ -14,7 +14,7 @@ class AlerteViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
-        qs = Alerte.objects.all()
+        qs = Alerte.objects.select_related('ville__region').all()
         # Non-admin users only see published alerts
         if not self.request.user.is_authenticated or getattr(self.request.user, 'role', '') != 'admin':
             qs = qs.filter(statut='publiee')
@@ -22,7 +22,7 @@ class AlerteViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='active')
     def get_active_alerts(self, request):
-        alertes = Alerte.objects.filter(est_active=True, statut='publiee')
+        alertes = Alerte.objects.filter(est_active=True, statut='publiee').select_related('ville__region')
         serializer = self.get_serializer(alertes, many=True)
         return Response(serializer.data)
 
@@ -31,7 +31,7 @@ class AlerteViewSet(viewsets.ModelViewSet):
         """Alertes ML en attente de validation (admin only)."""
         if not request.user.is_authenticated or getattr(request.user, 'role', '') != 'admin':
             return Response({"error": "Accès réservé aux administrateurs."}, status=403)
-        alertes = Alerte.objects.filter(statut='brouillon')
+        alertes = Alerte.objects.filter(statut='brouillon').select_related('ville__region')
         serializer = self.get_serializer(alertes, many=True)
         return Response(serializer.data)
 
@@ -84,7 +84,7 @@ class AlerteViewSet(viewsets.ModelViewSet):
         ville = alerte.ville
         utilisateurs = Utilisateur.objects.filter(
             villes_favorites=ville
-        ).exclude(fcm_token__isnull=True).exclude(fcm_token__exact='')
+        ).prefetch_related('villes_favorites').exclude(fcm_token__isnull=True).exclude(fcm_token__exact='')
 
         titre = f"Alerte AirGuard : {ville.nom}"
 

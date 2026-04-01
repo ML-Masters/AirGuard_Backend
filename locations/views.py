@@ -9,7 +9,6 @@ class RegionViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
 
 class VilleViewSet(viewsets.ModelViewSet):
-    queryset = Ville.objects.all()
+    queryset = Ville.objects.select_related('region').all()
     serializer_class = VilleSerializer
-
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]

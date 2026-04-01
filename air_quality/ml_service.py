@@ -65,7 +65,7 @@ def build_features_from_db(ville_nom):
     from meteo.models import ReleveMeteo
 
     try:
-        ville = Ville.objects.get(nom=ville_nom)
+        ville = Ville.objects.select_related('region').get(nom=ville_nom)
     except Ville.DoesNotExist:
         return None
 

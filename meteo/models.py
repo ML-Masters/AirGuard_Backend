@@ -34,6 +34,10 @@ class ReleveMeteo(models.Model):
 
     class Meta:
         unique_together = ('ville', 'date')
+        indexes = [
+            models.Index(fields=['ville', 'date']),
+            models.Index(fields=['date']),
+        ]
 
     def __str__(self):
         return f"Météo {self.ville.nom} - {self.date}"
