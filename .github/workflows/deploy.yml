@@ -8,15 +8,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 157.173.116.245 >> ~/.ssh/known_hosts
+
       - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1
-        with:
-          host: 157.173.116.245
-          username: administrator
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no administrator@157.173.116.245 << 'DEPLOY'
             cd /home/administrator/airguard-backend
             git pull origin main
             docker compose up -d --build
             docker exec airguard-backend python manage.py migrate --noinput
             echo "Deploy done at $(date)"
+          DEPLOY
